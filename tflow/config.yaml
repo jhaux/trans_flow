@@ -1,0 +1,17 @@
+dataset: tflow.data.MoonDataset
+model: tflow.model.TransformerModel
+iterator: tflow.iterator.Iterator
+
+batch_size: 64
+code_root: null
+num_epochs: 30
+
+eval_hook:
+    eval_callbacks:
+        in_n_out: tflow.iterator.plot_callback
+
+model_pars:
+    n_transformers: 10
+
+data:
+    nsamples: 20000
