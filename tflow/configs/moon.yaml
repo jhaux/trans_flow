@@ -1,0 +1,4 @@
+dataset: tflow.data.MoonDataset
+
+data:
+    nsamples: 20000

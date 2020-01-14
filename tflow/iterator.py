@@ -21,11 +21,14 @@ class Iterator(TemplateIterator):
         super().__init__(config, root, model, dataset, **kwargs)
         
     def step_op(self, _, labels_, **kwargs):
-        X = np2t(labels_['X'])
-        cls = np2t(labels_['y'],
+        X = labels_['X']
+        X = np2t(X, cuda=False)
+        X = self.maybe_cuda(X)
+
+        cls = np2t(labels_['y'][:, 0, None],
                    cuda=False,
-                   to_float=False).view(X.shape[0], 1).long()
-        cls = t2oh(cls, 2).cuda()
+                   to_float=False)
+        cls = self.maybe_cuda(t2oh(cls, 2))
         
         Y = self.model(X, cls) if self.model.is_cond else self.model(X)
 
@@ -43,8 +46,8 @@ class Iterator(TemplateIterator):
         def eval_op():
             Y_intermediate = [t2np(i) for i in self.model.intermediates[:-1]]
 
-            Y_sample_np = np.random.normal(size=[64, 2])
-            Y_sample = torch.from_numpy(Y_sample_np).float().cuda()
+            Y_sample_np = np.random.normal(size=[64, 200])
+            Y_sample = self.maybe_cuda(torch.from_numpy(Y_sample_np).float())
 
             X_inv = self.model.inv(Y_sample) if not self.model.is_cond else self.model.inv(Y_sample, cls)
             X_intermediate = [t2np(i) for i in self.model.intermediates[:-1]]
@@ -63,8 +66,10 @@ class Iterator(TemplateIterator):
                 ret_d['labels'][f'X_{i}'] = X_i
 
             if self.model.is_cond:
-                cls_0 = t2oh(torch.zeros_like(cls.cpu()).long(), 2).cuda()
-                cls_1 = t2oh(torch.ones_like(cls.cpu()).long(), 2).cuda()
+                cls_0 = self.maybe_cuda(torch.ones_like(cls.cpu()))
+                cls_1 = self.maybe_cuda(torch.ones_like(cls.cpu()))
+                cls_0[..., 1] = 0
+                cls_1[..., 0] = 0
 
                 # Case 1: only class 0
                 X_inv = self.model.inv(Y_sample, cls_0)
@@ -86,6 +91,10 @@ class Iterator(TemplateIterator):
 
                 for i, X_i in enumerate(X_interm):
                     ret_d['labels'][f'X_{i}_switch'] = X_i
+                ret_d['labels'][f'X_{i}_switch'] = t2np(X_inv)
+
+                ret_d['labels']['cls'] = t2np(cls)
+                ret_d['labels']['cls_inv'] = t2np(1 - cls)
 
             return ret_d
         
@@ -97,15 +106,26 @@ class Iterator(TemplateIterator):
         return {'train_op': train_op, 'eval_op': eval_op, 'log_op': log_op}
     
     def save(self, path):
+        self.model.cpu()
         torch.save(self.model.state_dict(), path)
+        if torch.cuda.is_available():
+            self.model.cuda()
     
     def restore(self, checkpoint_path):
-        self.model.load_state_dict(torch.load(checkpoint_path))
+        self.model.cpu()
+        self.model.load_state_dict(torch.load(checkpoint_path, map_location='cpu'))
+        if torch.cuda.is_available():
+            self.model.cuda()
 
     def initialize(self, *args, **kwargs):
         super().initialize(*args, **kwargs)
+        if torch.cuda.is_available():
+            self.model.cuda()
 
-        self.model.cuda()
+    def maybe_cuda(self, t):
+        if torch.cuda.is_available():
+            t = t.cuda()
+        return t
 
 
 def mscatter(x,y, ax=None, m=None, **kw):
@@ -185,6 +205,11 @@ def plot_callback_cond(root, data_in, data_out, config):
     n_t = retrieve(config, 'model_pars/n_transformers')
 
     label = data_in.labels['y']
+    label = data_in.labels['cls']
+    label_inv = data_in.labels['cls_inv']
+
+    print(label.mean())
+    print(label_inv.mean())
 
     X_intermediate = []
     Y_intermediate = []
@@ -222,7 +247,8 @@ def plot_callback_cond(root, data_in, data_out, config):
     X2Y = values['X2Y'] 
     Y2X = values['Y2X'] 
     label = label[choice]
-    label_inv = 1 - label
+    label_inv = label_inv[choice]
+    # label_inv = 1 - label
 
     color_f = X2Y[0][..., 0] * (X2Y[0][..., 1].max() - X2Y[0][..., 1].min()) + X2Y[0][..., 1]
     color_b = Y2X[0][..., 0] * (Y2X[0][..., 1].max() - Y2X[0][..., 1].min()) + Y2X[0][..., 1]
@@ -264,6 +290,14 @@ def plot_callback_cond_simple(root, data_in, data_out, config):
     n_t = retrieve(config, 'model_pars/n_transformers')
 
     label = data_in.labels['y']
+    label = data_out.labels['cls'].astype(int).argmax(-1)
+    label_inv = data_out.labels['cls_inv'].astype(int).argmax(-1)
+
+    print(np.unique(label))
+    print(np.unique(label_inv))
+    print(label.mean())
+    print(label.shape)
+    print(label_inv.mean())
 
     X_cls0 = data_out.labels[f'X_{n_t - 1}_0-0']
     X_cls1 = data_out.labels[f'X_{n_t - 1}_1-1']
@@ -291,7 +325,7 @@ def plot_callback_cond_simple(root, data_in, data_out, config):
     X2Y = values['X2Y'] 
     Y2X = values['Y2X'] 
     label = label[choice]
-    label_inv = 1 - label
+    label_inv = label_inv[choice]
 
     color_f = X2Y[0][..., 0] * (X2Y[0][..., 1].max() - X2Y[0][..., 1].min()) + X2Y[0][..., 1]
     color_b = Y2X[0][..., 0] * (Y2X[0][..., 1].max() - Y2X[0][..., 1].min()) + Y2X[0][..., 1]
@@ -327,3 +361,7 @@ def plot_callback_cond_simple(root, data_in, data_out, config):
             ax.set_title(f'step {0 if j == 0 else n_t}')
 
     f.savefig(os.path.join(root, 'in_n_out_simple.png'), dpi=300)
+
+def mean_cls(root, din, dout, c):
+    print(dout.labels['cls'].mean())
+    print(dout.labels['cls_inv'].mean())

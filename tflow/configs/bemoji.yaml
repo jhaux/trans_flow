@@ -1,0 +1,12 @@
+dataset: 
+    tflow.data.BEMoji_Train
+# train: tflow.data.BEMoji_Train
+# valid: tflow.data.BEMoji_Valid
+# eval: tflow.data.BEMoji_Test
+
+data:
+    root: /home/jhaux/Dr_J/Data/BEmoji/meta_dset/
+
+eval_hook:
+    eval_callbacks:
+        in_n_out: tflow.eval.behave.plot_sequences

@@ -1,4 +1,3 @@
-dataset: tflow.data.MoonDataset
 model: tflow.model.TransformerModel
 iterator: tflow.iterator.Iterator
 
@@ -12,6 +11,3 @@ eval_hook:
 
 model_pars:
     n_transformers: 10
-
-data:
-    nsamples: 20000

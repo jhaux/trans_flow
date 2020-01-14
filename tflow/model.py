@@ -3,27 +3,31 @@ import torch.nn as nn
 
 from tflow.blocks import Transformer, FCC, FCCC
 from edflow.util import retrieve
-from tflow.util import t2np, np2t, LazyT2OH
+from tflow.util import t2np, np2t, LazyT2OH, Seq2Vec
 t2oh = LazyT2OH()
 
 
 class TransformerModel(nn.Module):
     def __init__(self, config):
+        super().__init__()
+
         n_transformers = retrieve(config, 'model_pars/n_transformers', default=4)
         self.is_cond = retrieve(config, 'model_pars/conditional', default=False)
 
-        super().__init__()
         self.transformers = nn.ModuleList()
         for i in range(n_transformers):
-            C = FCC(1) if not self.is_cond else FCCC(1)
+            C = FCC(100) if not self.is_cond else FCCC(100)
             T = Transformer(C, self.is_cond, bool(i % 2))
             self.transformers += [T]
+
+        self.s2v = Seq2Vec(100, 2)
 
         self.test()
 
     def forward(self, value, cls=None, is_forward=True):
         self.intermediates = []
         if is_forward:
+            value = self.s2v(value)
             self.log_det = 0
             for T in self.transformers:
                 value = T(value) if not self.is_cond else T(value, cls)
@@ -33,6 +37,7 @@ class TransformerModel(nn.Module):
             for T in self.transformers[::-1]:
                 value = T.inverse(value) if not self.is_cond else T.inverse(value, cls)
                 self.intermediates += [value]
+            value = self.s2v.inverse(value)
             
         return value
     
@@ -44,14 +49,19 @@ class TransformerModel(nn.Module):
 
     def test(self):
         cls = t2oh(torch.ones(10, 1).long(), 2) if self.is_cond else None
-        in_val = torch.ones(10, 2).float()
+        in_val = torch.ones(10, 100, 2).float()
+        in_val.normal_()
         out_val = self(in_val, cls).float()
         rev_val = self.inverse(out_val, cls).float()
 
         equal = in_val == rev_val
         all_eq = torch.allclose(in_val, rev_val)
 
-        assert all_eq, (in_val.data, rev_val.data)
+        for T in self.transformers:
+            T.norm.is_initialized = False
+
+        all_eq = torch.allclose(in_val, rev_val, 1e-5, 1e-6)
+        assert all_eq, (in_val, rev_val, in_val - rev_val)
 
 if __name__ == '__main__':
     TM1 = TransformerModel(1)

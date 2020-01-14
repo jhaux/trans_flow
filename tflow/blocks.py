@@ -20,12 +20,14 @@ class Norm(nn.Module):
         self.test()
 
     def forward(self, value, is_forward=True):
-        if self.is_initialized is None:
-            mu = torch.mean(value, 0).detach()
-            sig = torch.std(value, 0).detach()
+        if not self.is_initialized:
+            mu = torch.mean(value, 0)
+            sig = torch.std(value, 0)
 
             self.trans.data.copy_(-mu)
-            self.scale.data.copy_(1. / (scale + 1e-6))
+            self.scale.data.copy_(1. / (sig + 1e-6))
+
+            self.is_initialized = True
 
         if is_forward:
             value = self.scale * (value + self.trans)
@@ -41,13 +43,15 @@ class Norm(nn.Module):
         return self(value, is_forward=False)
 
     def test(self):
-        in_val = torch.ones(10, 2).float()
+        in_val = torch.ones(10, self.nm).float()
+        in_val.normal_()
         out_val = self(in_val)
         rev_val = self.inverse(out_val).float()
 
         self.is_initialized = False
 
-        assert torch.allclose(in_val, rev_val), (in_val, rev_val)
+        all_eq = torch.allclose(in_val, rev_val, 1e-5, 1e-7)
+        assert all_eq, (in_val, rev_val, in_val - rev_val)
 
 
 class Transformer(nn.Module):
@@ -59,12 +63,12 @@ class Transformer(nn.Module):
 
         self.is_cond = is_cond
 
-        self.norm = Norm(2)
+        self.norm = Norm(self.C.nc * 2)
 
         self.test()
 
     def forward(self, value, cls=None, is_forward=True):
-        
+
         if is_forward:
             value = self.norm(value)
 
@@ -103,12 +107,14 @@ class Transformer(nn.Module):
 
     def test(self):
         cls = t2oh(torch.ones(10, 1).long(), 2) if self.is_cond else None
-        in_val = torch.ones(10, 2).float()
+        in_val = torch.ones(10, 2 * self.C.nc).float()
+        in_val.normal_()
         out_val = self(in_val, cls).float()
         rev_val = self.inverse(out_val, cls).float()
 
-        equal = in_val == rev_val
-        all_eq = torch.allclose(in_val, rev_val)
+        all_eq = torch.allclose(in_val, rev_val, 1e-5, 1e-7)
+
+        self.norm.is_initialized = False
 
         assert all_eq, (in_val.data, rev_val.data, torch.all(in_val == rev_val))
 
@@ -164,9 +170,9 @@ class FCCC(nn.Module):
         pars = value
         for i, l in enumerate(self.fn):
             if i > 0:
-                pars = l(value + cond)
+                pars = l(pars + cond)
             else:
-                pars = l(value)
+                pars = l(pars)
         translation, scale = pars[:, :self.nc], pars[:, self.nc:]
 
         scale = nn.functional.tanh(scale)

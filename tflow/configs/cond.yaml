@@ -1,0 +1,7 @@
+model_pars:
+    n_transformers: 10
+    conditional: True
+
+eval_hook:
+    eval_callbacks:
+        in_n_out: tflow.iterator.plot_callback_cond_simple
