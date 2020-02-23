@@ -107,7 +107,7 @@ class Transformer(nn.Module):
 
     def test(self):
         cls = t2oh(torch.ones(10, 1).long(), 2) if self.is_cond else None
-        in_val = torch.ones(10, 2 * self.C.nc).float()
+        in_val = torch.ones(10, self.C.nc * 2).float()
         in_val.normal_()
         out_val = self(in_val, cls).float()
         rev_val = self.inverse(out_val, cls).float()

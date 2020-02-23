@@ -17,8 +17,6 @@ def plot_sequences(root, di, do, config):
     n_seq = retrieve(config, 'eval/seq/n', default=10)
     n_t = retrieve(config, 'model_pars/n_transformers')
 
-    s2v = Seq2Vec(100, 2)
-
     choice = prng.choice(len(di), size=n_seq, replace=False)
 
     for tid in tqdm(choice, desc='T'):
@@ -31,16 +29,16 @@ def plot_sequences(root, di, do, config):
         cls_str = f'health: {list(set(cls))[0]}'
         inv_cls_str = f'health: {1 - list(set(cls))[0]}'
 
-        Y_in = do.labels['Y'][tid]
-        logger.info(f'Y {Y_in.shape}')
-        Y_in_s = s2v.inverse(Y_in)
-        logger.info(f'Y {Y_in_s.shape}')
+        # Y_in = do.labels['Y'][tid]
+        # logger.info(f'Y {Y_in.shape}')
+        # Y_in_s = s2v.inverse(Y_in)
+        # logger.info(f'Y {Y_in_s.shape}')
 
-        X_out_switch = do.labels[f'X_{n_t-1}_switch'][tid]
+        X_out_switch = do.labels[f'X_inv_switch'][tid]
         logger.info(f'Xo {X_out_switch.shape}')
 
-        f, [[ax1, ax2], [ax3, ax4]] = _, AX = plt.subplots(
-            2, 2,
+        f, [ax1, ax2] = _, AX = plt.subplots(
+            1, 2,
             figsize=[12.8, 7.2], dpi=300,
             constrained_layout=True
         )
@@ -50,11 +48,6 @@ def plot_sequences(root, di, do, config):
 
         ax2.scatter(X_out_switch[..., 0], X_out_switch[..., 1])
         ax2.set_title(f'Output sequence ({inv_cls_str})')
-
-        ax3.scatter(Y_in_s[..., 0], Y_in_s[..., 1])
-        ax3.set_title(f'Gaussianised Sequence ({cls_str})')
-
-        ax4.axis('off')
 
         for ax in [ax1, ax2]:
             ax.set_ylim(0, 1.1)

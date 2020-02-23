@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from tflow.blocks import Transformer, FCC, FCCC
+from tflow.models.blocks import Transformer, FCC, FCCC
 from edflow.util import retrieve
 from tflow.util import t2np, np2t, LazyT2OH, Seq2Vec
 t2oh = LazyT2OH()
@@ -13,21 +13,22 @@ class TransformerModel(nn.Module):
 
         n_transformers = retrieve(config, 'model_pars/n_transformers', default=4)
         self.is_cond = retrieve(config, 'model_pars/conditional', default=False)
+        ls_ = retrieve(config, 'model_pars/behavior_size')
+        num_behave_layers = retrieve(config, 'model_pars/behavior/num_layers')
+
+        self.latent_size = ls = ls_ * num_behave_layers
 
         self.transformers = nn.ModuleList()
         for i in range(n_transformers):
-            C = FCC(100) if not self.is_cond else FCCC(100)
+            C = FCC(ls // 2) if not self.is_cond else FCCC(ls // 2)
             T = Transformer(C, self.is_cond, bool(i % 2))
             self.transformers += [T]
-
-        self.s2v = Seq2Vec(100, 2)
 
         self.test()
 
     def forward(self, value, cls=None, is_forward=True):
         self.intermediates = []
         if is_forward:
-            value = self.s2v(value)
             self.log_det = 0
             for T in self.transformers:
                 value = T(value) if not self.is_cond else T(value, cls)
@@ -37,7 +38,6 @@ class TransformerModel(nn.Module):
             for T in self.transformers[::-1]:
                 value = T.inverse(value) if not self.is_cond else T.inverse(value, cls)
                 self.intermediates += [value]
-            value = self.s2v.inverse(value)
             
         return value
     
@@ -49,7 +49,7 @@ class TransformerModel(nn.Module):
 
     def test(self):
         cls = t2oh(torch.ones(10, 1).long(), 2) if self.is_cond else None
-        in_val = torch.ones(10, 100, 2).float()
+        in_val = torch.ones(10, self.latent_size).float()
         in_val.normal_()
         out_val = self(in_val, cls).float()
         rev_val = self.inverse(out_val, cls).float()

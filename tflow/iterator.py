@@ -13,12 +13,19 @@ t2oh = LazyT2OH()
 
 
 class Iterator(TemplateIterator):
-    def __init__(self, config, root, model, dataset, **kwargs):
+    def __init__(self, config, root, model, datasets, **kwargs):
         self.model = model
         
         self.optim = torch.optim.Adam(self.model.parameters(), lr=0.0001)  #, momentum=0.9)
+
+        self.n_start = retrieve(config, 'model_pars/start_size')
+        self.t_offset = retrieve(config, 'model_pars/prediction_offset')
+        self.behavior_size = retrieve(config, 'model_pars/behavior_size')
+
+        self.train_stage_1 = retrieve(config, 'training/stage_1')
+        self.train_stage_2 = retrieve(config, 'training/stage_2')
         
-        super().__init__(config, root, model, dataset, **kwargs)
+        super().__init__(config, root, model, datasets, **kwargs)
         
     def step_op(self, _, labels_, **kwargs):
         X = labels_['X']
@@ -29,14 +36,36 @@ class Iterator(TemplateIterator):
                    cuda=False,
                    to_float=False)
         cls = self.maybe_cuda(t2oh(cls, 2))
-        
-        Y = self.model(X, cls) if self.model.is_cond else self.model(X)
 
-        log_det_loss = -torch.mean(self.model.log_det)
+        bs, T, pose = X.shape
+
+        behavior_encoding = self.model.stage1.enc(X)
+
+        start_condition = X[:, :self.n_start]
+        output_length = T - self.t_offset
+        X_rec = self.model.stage1.dec(start_condition,
+                                      behavior_encoding,
+                                      output_length)
+
+        loss = 0
+        if self.train_stage_1:
+            kl_stage1 = torch.mean(0.5 * torch.sum(behavior_encoding ** 2, dim=-1))
+
+            X_targ = X[:, self.t_offset:]
+            rec_loss = torch.mean((X_rec - X_targ) ** 2)
+
+            loss += kl_stage1 + rec_loss
         
-        kl_loss = torch.mean(0.5 * torch.sum(Y ** 2, dim=-1))
+        if self.model.stage2.is_cond:
+            Y = self.model.stage2(behavior_encoding, cls)
+        else:
+            Y = self.model.stage2(behavior_encoding)
+
+        if self.train_stage_2:
+            log_det_loss = -torch.mean(self.model.stage2.log_det)
+            kl_loss = torch.mean(0.5 * torch.sum(Y ** 2, dim=-1))
         
-        loss = kl_loss + log_det_loss
+            loss += kl_loss + log_det_loss
 
         def train_op():
             self.optim.zero_grad()
@@ -44,54 +73,26 @@ class Iterator(TemplateIterator):
             self.optim.step()
         
         def eval_op():
-            Y_intermediate = [t2np(i) for i in self.model.intermediates[:-1]]
+            if not self.model.stage2.is_cond:
+                Y_inv = self.model.stage2.inv(Y)
+            else:
+                Y_inv = self.model.stage2.inv(Y, cls)
 
-            Y_sample_np = np.random.normal(size=[64, 200])
-            Y_sample = self.maybe_cuda(torch.from_numpy(Y_sample_np).float())
-
-            X_inv = self.model.inv(Y_sample) if not self.model.is_cond else self.model.inv(Y_sample, cls)
-            X_intermediate = [t2np(i) for i in self.model.intermediates[:-1]]
+            X_inv = self.model.stage1.dec(start_condition, Y_inv, output_length)
 
             ret_d = {'labels': {
                 'Y': t2np(Y),
-                'Y_sample': Y_sample_np,
-                'X_sample': t2np(X_inv),
+                'Y_inv': t2np(Y_inv),
                 'pos_sample': t2np(X_inv)
             }}
 
-            for i, Y_i in enumerate(Y_intermediate):
-                ret_d['labels'][f'Y_{i}'] = Y_i
-
-            for i, X_i in enumerate(X_intermediate):
-                ret_d['labels'][f'X_{i}'] = X_i
-
-            if self.model.is_cond:
-                cls_0 = self.maybe_cuda(torch.ones_like(cls.cpu()))
-                cls_1 = self.maybe_cuda(torch.ones_like(cls.cpu()))
-                cls_0[..., 1] = 0
-                cls_1[..., 0] = 0
-
-                # Case 1: only class 0
-                X_inv = self.model.inv(Y_sample, cls_0)
-                X_interm = [t2np(i) for i in self.model.intermediates]
-
-                for i, X_i in enumerate(X_interm):
-                    ret_d['labels'][f'X_{i}_0-0'] = X_i
-
-                # Case 2: only class 1
-                X_inv = self.model.inv(Y_sample, cls_1)
-                X_interm = [t2np(i) for i in self.model.intermediates]
-
-                for i, X_i in enumerate(X_interm):
-                    ret_d['labels'][f'X_{i}_1-1'] = X_i
-
+            if self.model.stage2.is_cond:
                 # Case 3: invert class 
-                X_inv = self.model.inv(Y, 1 - cls)
-                X_interm = [t2np(i) for i in self.model.intermediates]
+                Y_inv_switch = self.model.stage2.inv(Y, 1 - cls)
+                X_inv_switch = self.model.stage1.dec(start_condition, Y_inv_switch, output_length)
 
-                for i, X_i in enumerate(X_interm):
-                    ret_d['labels'][f'X_{i}_switch'] = X_i
-                ret_d['labels'][f'X_{i}_switch'] = t2np(X_inv)
+                ret_d['labels'][f'Y_inv_switch'] = t2np(X_inv)
+                ret_d['labels'][f'X_inv_switch'] = t2np(X_inv)
 
                 ret_d['labels']['cls'] = t2np(cls)
                 ret_d['labels']['cls_inv'] = t2np(1 - cls)
@@ -100,7 +101,9 @@ class Iterator(TemplateIterator):
         
         def log_op():
             return {'scalars':
-                    {'loss': loss, 'kl': kl_loss, 'det': log_det_loss}
+                    {'loss': loss,
+                     'stage1/kl': kl_stage1, 'stage1/rec': rec_loss,
+                     'stage2/kl': kl_loss, 'stage2/det': log_det_loss}
                     }
         
         return {'train_op': train_op, 'eval_op': eval_op, 'log_op': log_op}
@@ -299,21 +302,15 @@ def plot_callback_cond_simple(root, data_in, data_out, config):
     print(label.shape)
     print(label_inv.mean())
 
-    X_cls0 = data_out.labels[f'X_{n_t - 1}_0-0']
-    X_cls1 = data_out.labels[f'X_{n_t - 1}_1-1']
-    X_cls_switch = data_out.labels[f'X_{n_t - 1}_switch']
+    X_cls_switch = data_out.labels['X_inv_switch']
 
     X_in = data_in.labels['X']
     Y_out = data_out.labels['Y']
-    Y_sample = data_out.labels['Y_sample']
-    X_sample = data_out.labels['X_sample']
 
     values = {}
 
     values['X2Y'] = [X_in] + [Y_out]
     values['Y2X'] = [Y_sample] + [X_sample]
-    values['Y2X0'] = [Y_sample] + [X_cls0]
-    values['Y2X1'] = [Y_sample] + [X_cls1]
     values['Y2Xswitch'] = [Y_out] + [X_cls_switch]
 
     prng = np.random.RandomState(42)
@@ -336,12 +333,12 @@ def plot_callback_cond_simple(root, data_in, data_out, config):
     marker_b = 'o'
 
     w = 10
-    f, AX = plt.subplots(len(X2Y), 5,
+    f, AX = plt.subplots(len(X2Y), 3,
                          sharex=True, sharey=True,
                          figsize=(w, 0.4*len(X2Y) * w),
                          constrained_layout=True)
 
-    order = ['X2Y', 'Y2Xswitch', 'Y2X', 'Y2X0', 'Y2X1']
+    order = ['X2Y', 'Y2Xswitch', 'Y2X']
     colors = [color_f, color_f, color_b, color_b, color_b]
     markers = [marker_f, marker_f, marker_f, ['s'] * len(X2Y[0]), ['o']*len(X2Y[0])]
 

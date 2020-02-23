@@ -1,5 +1,6 @@
-dataset: 
-    tflow.data.BEMoji_Train
+datasets: 
+    train: tflow.data.BEMoji_Train
+    validation: tflow.data.BEMoji_Valid
 # train: tflow.data.BEMoji_Train
 # valid: tflow.data.BEMoji_Valid
 # eval: tflow.data.BEMoji_Test

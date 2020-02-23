@@ -1,4 +1,4 @@
-model: tflow.model.TransformerModel
+model: tflow.models.model.Model
 iterator: tflow.iterator.Iterator
 
 batch_size: 64
@@ -7,7 +7,26 @@ num_epochs: 30
 
 eval_hook:
     eval_callbacks:
-        in_n_out: tflow.iterator.plot_callback
+        in_n_out: tflow.iterator.plot_callback_cond_simple
 
 model_pars:
     n_transformers: 10
+    conditional: True
+
+    behavior:
+        num_layers: 3
+        input_size: 2
+        constant_hidden_state: false
+
+    behavior_size: 256
+    start_size: 10
+    prediction_offset: 1
+
+training:
+    stage_1: true
+    stage_2: true
+
+integrations:
+    wandb:
+        active: true
+        project: '2stage_behave'
